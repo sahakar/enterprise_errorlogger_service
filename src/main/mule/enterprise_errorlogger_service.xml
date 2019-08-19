@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<mule xmlns:jms="http://www.mulesoft.org/schema/mule/jms" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit-soap="http://www.mulesoft.org/schema/mule/apikit-soap" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/apikit-soap http://www.mulesoft.org/schema/mule/apikit-soap/current/mule-apikit-soap.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/jms http://www.mulesoft.org/schema/mule/jms/current/mule-jms.xsd">
+    <http:listener-config name="api-httpListenerConfig">
+        <http:listener-connection host="0.0.0.0" port="${http_port}"/>
+    </http:listener-config>
+    <apikit-soap:config name="soapkit-config" port="execute_pt" service="ErrorLoggerHandler" wsdlLocation="EnterpriseErrorLoggerHandler.wsdl" soapVersion="SOAP12"/>
+    <db:config name="Database_Config" doc:name="Database Config" doc:id="6f7e6070-0f72-40ba-a30e-04ad85c188b6" >
+		<db:oracle-connection host="${db_host}" user="${db_username}" password="${db_password}" port="${db_port}" serviceName="${db_servicename}"/>
+	</db:config>
+	<jms:config name="JMS_Config" doc:name="JMS Config" doc:id="318b6ec2-33a4-4d93-8769-4e323a7b7a90" >
+		<jms:active-mq-connection username="${amq_username}" password="${amq_password}" >
+			<jms:factory-configuration brokerUrl="${amq_broker}" />
+		</jms:active-mq-connection>
+	</jms:config>
+	<configuration-properties doc:name="Configuration properties" doc:id="7063a1ea-c008-4986-b0d3-67daa51d2aec" file="${env}.properties" />
+	<global-property doc:name="Global Property" doc:id="1f482bed-3284-4f8e-8f4c-5c26464fd631" name="env" value="dev" />
+	<flow name="api-main">
+        <http:listener config-ref="api-httpListenerConfig" path="${path}" doc:name="To Receive Error Payload">
+            <http:response statusCode="#[attributes.protocolHeaders.httpStatus default 200]">
+            </http:response>
+            <http:error-response statusCode="#[attributes.protocolHeaders.httpStatus default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+            </http:error-response>
+        </http:listener>
+        <logger level="INFO" doc:name="To Log Input Request" doc:id="0df42851-37ed-449d-be4b-34bcb6d2889f" message="Error-logger-service request payload received and process initiated "/>
+		<apikit-soap:router config-ref="soapkit-config" doc:name="Error Logger Service">
+			<apikit-soap:attributes><![CDATA[#[%dw 2.0
+              output application/java
+              ---
+              {
+                  headers: attributes.headers,
+                  method: attributes.method,
+                  queryString: attributes.queryString
+            }]]]></apikit-soap:attributes>
+        </apikit-soap:router>
+    </flow>
+    <flow name="execute:\soapkit-config">
+        <ee:transform doc:id="c02a50d7-e597-4c2a-ba71-679ba5fe726c" doc:name="Transform From Java to XML">
+            <ee:message>
+                <ee:set-payload><![CDATA[%dw 2.0
+output application/xml
+ns soap http://schemas.xmlsoap.org/soap/envelope
+---
+payload.body]]></ee:set-payload>
+            </ee:message>
+        </ee:transform>
+		<scatter-gather doc:name="To call DB and JMS parallelly" doc:id="2b0a15a7-12bf-4175-abfa-761e98a1e22f" >
+			<route >
+				<db:insert doc:name="Insert error payload into DB" doc:id="f52d54f3-09ef-4dcc-bc34-bcc026b5fdd2" config-ref="Database_Config">
+					<db:sql >insert into ENTERPRISE_COMMON_ERROR_LOG(DOMAIN, PROCESS_NAME, INSTANCE_ID, ROOT_ID, STEP, SYSTEM_NAME, ENTITY_TYPE, ENTITY_ID, ERROR_CODE, 
+ERROR_DESC, ERROR_TEXT, ERROR_TYPE, ERROR_SEVERITY,ERROR_DATETIME, NOTIFICATION_FLAG, NOTIFICATION_RECIPIENT, ACKNOWLEDGEMENT_FLAG,
+ACKNOWLEDGEMENT_DATE, MESSAGE_ID,MESSAGE_DATETIME, MESSAGE_TYPE, MESSAGE_VERSION, MESSAGE_OPERATION, MESSAGE_SOURCE_SYSTEM, 
+ERROR_TEXT_LONG, MESSAGE_PAYLOAD) values (:domain,:process_name,:instance_id,:root_id,:step,:system_name,:entity_type,:entity_id,:error_code,
+:error_desc,:error_text,:error_type,:error_severity,:error_datetime,:notification_flag,:notification_recipient,:acknowledgement_flag,:acknowledgement_date,
+:message_id,:message_datetime,:message_type,:message_version,:message_operation,:message_source_system,:error_text_long,:message_payload)</db:sql>
+					<db:input-parameters ><![CDATA[#[{domain : payload.ErrorData.ProcessInfo.BusinessProcessDomain,
+process_name : payload.ErrorData.ProcessInfo.BusinessProcessName,
+instance_id : payload.ErrorData.ProcessInfo.BusinessProcessId,
+root_id : payload.ErrorData.ProcessInfo.IntegrationID,
+step : payload.ErrorData.ProcessInfo.BusinessProcessStep,
+system_name : payload.ErrorData.ProcessInfo.SystemName,
+entity_type : payload.ErrorData.Entity.EntityType,
+entity_id : payload.ErrorData.Entity.EntityID,
+error_code : payload.ErrorData.ErrorDetails.ErrorCode,
+error_desc : payload.ErrorData.ErrorDetails.ErrorDescription,
+error_text : payload.ErrorData.ErrorDetails.ErrorText,
+error_type : payload.ErrorData.ErrorDetails.ErrorType,
+error_severity : payload.ErrorData.ErrorDetails.ErrorSeverity,
+error_datetime : payload.ErrorData.ErrorDetails.ErrorDateTime as LocalDateTime as String {format: "yyyy-MM-dd HH:mm:ss"},
+notification_flag : payload.ErrorData.Notification.sendNotification,
+notification_recipient : payload.ErrorData.Notification.RecipientList.Recipient.RecipientAddress,
+acknowledgement_flag : payload.ErrorData.Notification.sendNotification,
+acknowledgement_date : payload.ErrorData.ErrorDetails.ErrorDateTime as LocalDateTime as String {format: "yyyy-MM-dd HH:mm:ss"},
+message_id : payload.ErrorData.MessageDetails.MessageId,
+message_datetime : payload.ErrorData.MessageDetails.MessageDateTime as LocalDateTime as String {format: "yyyy-MM-dd HH:mm:ss"},
+message_type : payload.ErrorData.MessageDetails.MessageType,
+message_version : payload.ErrorData.MessageDetails.MessageVersion,
+message_operation : payload.ErrorData.MessageDetails.MessageOperation,
+message_source_system : payload.ErrorData.MessageDetails.MessageSourceSystem,
+error_text_long : payload.ErrorData.ErrorDetails.ErrorText,
+message_payload : payload.ErrorData.MessageDetails.MessageData
+}]]]></db:input-parameters>
+				</db:insert>
+			</route>
+			<route >
+				<jms:publish doc:name="Publish error payload to JMS" doc:id="9ec7ddc1-9630-4126-8264-044e6c412579" config-ref="JMS_Config" destination="${queue_name}"/>
+			</route>
+		</scatter-gather>
+		<logger level="INFO" doc:name="Log Successfull Message" doc:id="0c4dcd3d-bf8d-4812-bebd-383bb5c3e9eb" message="error-logger-service successfully inserted error object data into database and published payload to the queue "/>
+    </flow>
+</mule>
